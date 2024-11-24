@@ -1,0 +1,17 @@
+M1 (Server Replica 1) - wants, instant, responds to all
+M2 (Server Replica 2) - wants, two situations: longest, responding to few, or instant, responding to all
+M3 (Server Replica 3) - wants, two situations: inbetween M1 and M2, responding to all, or not at all, to none at all
+M4-9 (Server Replicas 4-9) - no ambitions, response times vary
+
+Nodes agree on a President
+Day of the vote:
+1. One node sends a proposed president to all nodes
+2. A majority is required (half + 1)
+
+M1, M2, M3 will all propose/vote for themselves, and vote against anyone else. M4-9 will propose/vote for anyone (50-50
+yes/no for any proposed president). Need 5 for an election.
+
+Probability anyone is elected: if M1-3 are proposed, then there's guaranteed 1 for, two against, 6 maybe. Likely fail.
+If M4-9 are proposed, 1 for, 3 against, 5 maybe.
+
+Make system scalable
