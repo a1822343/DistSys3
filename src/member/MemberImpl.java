@@ -46,6 +46,9 @@ public class MemberImpl implements Member {
     // The number of members considered a majority
     int majority;
 
+    int acceptors;
+    int votes;
+
     // represents the availability of this member
     boolean available;
 
@@ -86,6 +89,23 @@ public class MemberImpl implements Member {
         startMember();
     }
 
+    public void startMember() {
+        Thread memberThread = new Thread(() -> {
+            try {
+                ServerSocket serverSocket = new ServerSocket(port);
+                // while the server is available for communication
+                while (available) {
+                    Socket member = serverSocket.accept();
+                    new Thread(() -> handleMemberConnection(member)).start();
+                }
+                serverSocket.close();
+            } catch (IOException e) {
+                System.out.println(e.getMessage());
+            }
+        });
+        memberThread.start();
+    }
+
     // connects this Member to all other Members
     public void establishConnections() throws IOException {
         for (int i = 0; i < membersCount; i++) {
@@ -100,39 +120,38 @@ public class MemberImpl implements Member {
         //System.out.println();
     }
 
-    public void startMember() {
-        Thread memberThread = new Thread(() -> {
-            try {
-                ServerSocket serverSocket = new ServerSocket(port);
-                while (available) {
-                    Socket member = serverSocket.accept();
-                    new Thread(() -> handleMemberConnection(member)).start();
-                }
-                serverSocket.close();
-            } catch (IOException e) {
-                System.out.println(e.getMessage());
-            }
-        });
-        memberThread.start();
-    }
-
     public void handleMemberConnection(Socket member) {
         try (
                 BufferedReader in = new BufferedReader(new InputStreamReader(member.getInputStream()));
                 BufferedWriter out = new BufferedWriter(new OutputStreamWriter(member.getOutputStream()))
         ) {
             String message = readMessage(in);
-            //System.out.println(port + " " + message);
-            actOnMessage(message, out);
+            System.out.println(port + " " + message);
+            Message response = actOnMessage(message);
+            //System.out.println(response);
+            if (response != null) sendMessage(out, response);
+            out.flush();
+            member.close();
         } catch (IOException e) {
             System.out.println(e.getMessage());
         }
     }
 
+    public void propagateMessage(Message message) {
+        for (Socket member : members) {
+            try (BufferedWriter bw = new BufferedWriter(new OutputStreamWriter(member.getOutputStream()))) {
+                sendMessage(bw, message);
+            } catch (IOException e) {
+                System.out.println(e.getMessage());
+            }
+        }
+    }
+
     // needed a separate function that could be called by itself to retry communicating with a member after a failure
-    public void sendMessage(Socket member, Message message) {
-        try (BufferedWriter bw = new BufferedWriter(new OutputStreamWriter(member.getOutputStream()))) {
-            message.send(bw);
+    public void sendMessage(BufferedWriter member, Message message) {
+        try {
+            //System.out.println(message.asString());
+            message.send(member);
         } catch (IOException e) {
             System.out.println(e.getMessage());
             sendMessage(member, message);
@@ -151,55 +170,79 @@ public class MemberImpl implements Member {
         return response.toString();
     }
 
-    public boolean actOnMessage(String message, BufferedWriter out) {
+    public Message actOnMessage(String message) {
         //System.out.println(port + "\n" + message);
         // Grab the status from the messages first line
         String header = message.split("\n")[0];
         int type = Integer.parseInt(header.split(" ")[1]);
         JSONParser p = new JSONParser();
         JSONObject body = null;
+        int proposedID = 0;
+        int nominee = 0;
         try {
             // this should support bodies like { "key": value } and
             // {
             //   "key": value
             // }
             body = (JSONObject) p.parse(message.split(header + "\n")[1]);
+            if (!body.isEmpty()) {
+                proposedID = Integer.parseInt(body.get("n").toString());
+                nominee = Integer.parseInt(body.get("nominee").toString());
+            }
         } catch (ParseException e) {
             System.out.println(e.getMessage());
         }
+
+        Message response;
         switch (type) {
             // PROPOSE
             case 100:
-                respondPromise(Integer.parseInt(body.get("n").toString()));
-                return false;
+                response = respondPromise(proposedID);
+                acceptedID.set(proposedID);
+                acceptedNominee.set(nominee);
+                break;
             // PREPARE-OK
             case 101:
-                return true;
+                System.out.println("Got promises");
+                acceptors++;
+                if (acceptors == majority) {
+                    System.out.println("Gathering acceptance");
+                    propagateAcceptRequest();
+                }
+                return null;
             // NACK
             case 102:
-                return false;
+                return null;
             // ACCEPT-REQUEST
             case 200:
-                respondAcceptDecision();
-                return false;
+                response = respondAcceptDecision();
+                break;
             // ACCEPT-OK
             case 201:
-                return true;
+                votes++;
+                if (votes == majority) propagateDecide(proposedNominee.intValue());
+                return null;
             // ACCEPT-REJECT
             case 202:
-                return false;
+                return null;
             // DECIDE
             case 300:
-                decide(Integer.parseInt(body.get("nominee").toString()));
-                return false;
+                decide(nominee);
+                return null;
             default:
-                return false;
+                return null;
         }
+
+        if (acceptors - votes >= majority) return null;
+
+        return response;
     }
 
     // this node becomes the leader for the (proposalCount + 1)th proposal
     @Override
     public Message propagatePropose(int _nominee) {
+        acceptors = 0;
+        votes = 0;
         if (preference == 0) proposedNominee.set(_nominee);
         else proposedNominee.set(preference);
 
@@ -209,9 +252,7 @@ public class MemberImpl implements Member {
 
         Message proposal = new Message(MessageTypes.PROPOSE, payload);
 
-        for (Socket member : members) {
-            sendMessage(member, proposal);
-        }
+        propagateMessage(proposal);
 
         return proposal;
     }
@@ -226,12 +267,13 @@ public class MemberImpl implements Member {
             payload.put("nominee", acceptedNominee.intValue());
         }
 
+
         Message promise;
-        if (_proposalID <= proposalID.intValue()) {
+        if (_proposalID <= acceptedID.intValue()) {
             promise = new Message(MessageTypes.NACK, payload);
         } else {
-            proposalID.set(_proposalID);
             promise = new Message(MessageTypes.PREPARE_OK, payload);
+            System.out.println("Promising...");
         }
 
         // artificial latency
@@ -248,33 +290,64 @@ public class MemberImpl implements Member {
     @Override
     public Message propagateAcceptRequest() {
         Message acceptRequest = new Message(MessageTypes.ACCEPT_REQUEST, null);
+
+        // artificial latency
         try {
             sleep(latency.longValue());
         } catch (InterruptedException e) {
             System.out.println(e.getMessage());
         }
+        propagateMessage(acceptRequest);
         return acceptRequest;
     }
 
     @Override
     public Message respondAcceptDecision() {
-        Message acceptDecision = new Message(MessageTypes.ACCEPT_OK, null);
+        Message acceptDecision;
+        // if member has a preference, vote according to that preference
+        if (preference != 0) {
+            if (proposedNominee.intValue() == preference) {
+                acceptDecision = new Message(MessageTypes.ACCEPT_OK, null);
+                System.out.println("Accepting...");
+            } else {
+                acceptDecision = new Message(MessageTypes.ACCEPT_REJECT, null);
+                System.out.println("Rejecting...");
+            }
+        } else {
+            // if member has no preference, accept randomly
+            if ((int) (Math.random() * 2) == 0) {
+                acceptDecision = new Message(MessageTypes.ACCEPT_OK, null);
+            } else {
+                acceptDecision = new Message(MessageTypes.ACCEPT_REJECT, null);
+            }
+        }
+
+
+        // artificial latency
         try {
             sleep(latency.longValue());
         } catch (InterruptedException e) {
             System.out.println(e.getMessage());
         }
+
         return acceptDecision;
     }
 
     @Override
-    public Message propagateDecide() {
-        Message decision = new Message(MessageTypes.DECIDE, null);
+    public Message propagateDecide(int nominee) {
+        JSONObject payload = new JSONObject();
+        payload.put("nominee", nominee);
+        Message decision = new Message(MessageTypes.DECIDE, payload);
+
+        // artificial latency
         try {
             sleep(latency.longValue());
         } catch (InterruptedException e) {
             System.out.println(e.getMessage());
         }
+
+        propagateMessage(decision);
+        decide(nominee);
         return decision;
     }
 

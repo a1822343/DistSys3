@@ -1,5 +1,7 @@
 Using openjdk-22
 
+`make all` should compile everything into the out folder
+
 #### Design Considerations
 My intuition is to create a node manager server instance that has members connect to it and send messages to propagate or specifically respond to a peer through
 This opens the system up to a single point of failure. Since the node-manager would be trying to be transparent, if it closed the members would not know if it was an issue with the other members or the server

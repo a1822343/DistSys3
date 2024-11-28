@@ -16,12 +16,12 @@ public interface Member {
     Message respondPromise(int _proposalID);
     Message propagateAcceptRequest();
     Message respondAcceptDecision();
-    Message propagateDecide();
+    Message propagateDecide(int nominee);
     void decide(int nominee);
 
-    void sendMessage(Socket member, Message message);
+    void sendMessage(BufferedWriter member, Message message);
     String readMessage(BufferedReader member) throws IOException;
-    boolean actOnMessage(String message, BufferedWriter out);
+    Message actOnMessage(String message);
 
     // Mostly for testing purposes
     // Forces Member to go offline

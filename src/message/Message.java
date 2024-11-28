@@ -5,8 +5,6 @@ import org.json.simple.JSONObject;
 
 import java.io.BufferedWriter;
 import java.io.IOException;
-import java.io.OutputStreamWriter;
-import java.net.Socket;
 
 public record Message(MessageTypes statusCode, JSONObject payload) {
     public String asString() {
@@ -43,6 +41,7 @@ public record Message(MessageTypes statusCode, JSONObject payload) {
     // Send message
     public void send(BufferedWriter bw) throws IOException {
         bw.write(this.asString());
+        //System.out.println(this.asString());
         bw.newLine();
         bw.flush();
     }
